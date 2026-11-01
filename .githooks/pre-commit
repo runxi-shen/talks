@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Enforces the "compress + human review" rule for slide PDFs.
+#
+# Blocks a commit when a staged PDF is:
+#   1. larger than MAX_PDF_BYTES (default 4 MiB) - i.e. still a raw PPT export, or
+#   2. not approved via approve.sh (no matching sha256 token in .git/).
+#
+# Emergency override: ALLOW_UNREVIEWED_PDF=1 git commit ...
+set -euo pipefail
+
+max_bytes="${MAX_PDF_BYTES:-4194304}"
+max_mb=$((max_bytes / 1048576))
+token_file="$(git rev-parse --git-dir)/pdf-review-approved"
+failed=0
+
+check_pdf() {
+  local path="$1" sha="$2"
+  local size
+  size="$(git cat-file -s "$sha")"
+
+  if [ "$size" -gt "$max_bytes" ]; then
+    printf '\n  ✗ %s is %.1f MB (limit %s MB) - looks uncompressed.\n' \
+      "$path" "$(echo "$size/1048576" | bc -l)" "$max_mb"
+    echo "      run: .agents/skills/pdf-slide-compression/scripts/stage-for-review.sh"
+    failed=1
+    return
+  fi
+
+  local sum
+  sum="$(git cat-file blob "$sha" | shasum -a 256 | cut -d' ' -f1)"
+  if ! [ -f "$token_file" ] || ! awk -v s="$sum" -v p="$path" '$1==s && $2==p{found=1} END{exit !found}' "$token_file"; then
+    printf '\n  ✗ %s (%.1f MB) has not been reviewed by a human.\n' \
+      "$path" "$(echo "$size/1048576" | bc -l)"
+    echo "      run: .agents/skills/pdf-slide-compression/scripts/approve.sh"
+    failed=1
+  fi
+}
+
+# Only files staged for this commit.
+while IFS= read -r -d '' path; do
+  case "$path" in
+    *.pdf | *.PDF)
+      sha="$(git ls-files -s -z -- "$path" | tr -d '\0' | awk '{print $2}')"
+      [ -n "$sha" ] && check_pdf "$path" "$sha"
+      ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=ACM -z)
+
+if [ "$failed" -ne 0 ]; then
+  if [ "${ALLOW_UNREVIEWED_PDF:-0}" = "1" ]; then
+    echo
+    echo "  ! ALLOW_UNREVIEWED_PDF=1 set - committing anyway." >&2
+    exit 0
+  fi
+  echo
+  echo "Commit blocked by the slide-PDF review gate (see .agents/skills/pdf-slide-compression)."
+  echo "Override with: ALLOW_UNREVIEWED_PDF=1 git commit ..."
+  exit 1
+fi
+
+exit 0

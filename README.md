@@ -20,6 +20,8 @@ docs/                              # Published website (URL root)
     IUSM-CCBB-2026.png
   SBI2-2026.pdf
   IUSM-CCBB-CarpenterShen-2026.pdf
+.agents/skills/pdf-slide-compression/   # Skill: compress + review gate
+.githooks/pre-commit                    # Blocks oversized/unreviewed PDFs
 ```
 
 GitHub Pages publishes the **contents** of `docs/`, not the folder name.
@@ -46,9 +48,11 @@ same once the new source is deployed. No dependencies or build commands are need
 
 ## Add a talk
 
-1. Export the final slides to PDF. Aim for under 25 MiB for easy browser uploads.
-2. Save it in `docs/`. Use a short, stable filename with the year. Avoid spaces;
-   capitalization matters. Do not rename an already-shared PDF.
+1. Export the final slides to PDF and save it in `docs/`. Use a short, stable
+   filename with the year. Avoid spaces; capitalization matters. Do not rename an
+   already-shared PDF.
+2. Compress it and review it before committing — see below. A raw PowerPoint
+   export is ~10 MB; 150 dpi brings it to ~2.8 MB with text and links intact.
 3. Save a first-slide preview in `docs/assets/`. Use the image's actual width and
    height in the page; the current previews are 1200 × 675 pixels.
 4. Copy a `<article class="talk">` block in `docs/index.html` and update its title,
@@ -60,6 +64,36 @@ same once the new source is deployed. No dependencies or build commands are need
 
 Share the HTTPS PDF address in email and QR codes. To correct slides, replace the
 same file; for a distinct talk, use a new filename. Downloads work without JavaScript.
+
+## Compress and review decks
+
+PowerPoint/Keynote embeds images at 4K for a 10-inch-wide slide, which is why raw
+exports hit ~10 MB. Images are downsampled; vector text, fonts, and links are kept.
+
+```sh
+# 1. compress docs/*.pdf into preview/ and open a side-by-side comparison
+.agents/skills/pdf-slide-compression/scripts/stage-for-review.sh
+
+# 2. look at preview/compare.html yourself; zoom 200-400% on photo-heavy slides
+
+# 3. if it looks good, approve (interactive prompt; swaps files into docs/)
+.agents/skills/pdf-slide-compression/scripts/approve.sh
+```
+
+`approve.sh` archives the full-res originals to `~/Documents/talks-masters-original/`.
+A pre-commit hook rejects any staged PDF over 4 MiB, or one that was never approved,
+so decks cannot reach the site without a human looking at them.
+
+Enable the hook once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Always compress from the original export, never from an already-compressed PDF
+(repeated JPEG passes accumulate loss). Emergency override:
+`ALLOW_UNREVIEWED_PDF=1 git commit ...`. Full details live in
+`.agents/skills/pdf-slide-compression/SKILL.md`.
 
 ## Local preview
 
