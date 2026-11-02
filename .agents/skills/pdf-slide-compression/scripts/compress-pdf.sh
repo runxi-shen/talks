@@ -45,7 +45,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 "$GS" -dNOPAUSE -dBATCH -dSAFER -sDEVICE=pdfwrite -dCompatibilityLevel=1.7 \
-  -dEmbedAllFonts=true -dSubsetFonts=true \
+  -dEmbedAllFonts=true -dSubsetFonts=false \
   -dAutoFilterColorImages=false -dAutoFilterGrayImages=false \
   -dColorImageFilter=/DCTEncode -dGrayImageFilter=/DCTEncode \
   -dDownsampleColorImages=true -dColorImageDownsampleType=/Bicubic \
@@ -76,8 +76,7 @@ fi
 
 mv "$tmp/out.pdf" "$out"
 
-# Sanity checks: page count, text, and links must survive.
-pages_in=$(strings "$in" | grep -c '/Type */Page[^s]' || true)
+# Sanity checks: page count, text, and links must survive.pages_in=$(strings "$in" | grep -c '/Type */Page[^s]' || true)
 pages_out=$(strings "$out" | grep -c '/Type */Page[^s]' || true)
 words_in=$(pdftotext "$in" - 2>/dev/null | wc -w | tr -d ' ' || echo 0)
 words_out=$(pdftotext "$out" - 2>/dev/null | wc -w | tr -d ' ' || echo 0)
@@ -91,6 +90,27 @@ printf '%-40s %6.2f MB -> %6.2f MB  (-%d%%)  %s dpi q%s\n' \
 
 if [ "$words_in" != "$words_out" ] && [ "$words_in" -gt 0 ]; then
   echo "warning: word count changed ($words_in -> $words_out) - inspect for dropped text" >&2
+fi
+
+# Non-ASCII fidelity guard. Ghostscript's font subsetting (-dSubsetFonts=true)
+# silently corrupts the ToUnicode mapping, so accented names, smart quotes and
+# dashes come out as mojibake ('Muñoz' -> 'Mu–oz', '•' -> '¥'). That is why
+# subsetting is disabled above; this check fails loudly if it ever regresses.
+charset() {
+  pdftotext "$1" - 2>/dev/null | python3 -c "
+import sys, collections
+t = sys.stdin.read()
+c = collections.Counter(ch for ch in t if ord(ch) > 127)
+print(';'.join('%s:%d' % (ch, n) for ch, n in sorted(c.items())))
+"
+}
+if command -v pdftotext >/dev/null 2>&1; then
+  cin=$(charset "$in"); cout=$(charset "$out")
+  if [ "$cin" != "$cout" ]; then
+    echo "warning: non-ASCII text changed by compression (font/ToUnicode damage):" >&2
+    echo "  in : $cin" >&2
+    echo "  out: $cout" >&2
+  fi
 fi
 
 # Structural validation. Ghostscript's -dFastWebView corrupts the hint table, so
