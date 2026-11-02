@@ -77,6 +77,10 @@ Below 150 dpi you stop saving much and start losing legibility on fine figures.
   reflows badly. Serve the PDF; browsers render it natively.
 - Verify after compressing: same page count, same word count (`pdftotext`), 66 font
   subsets preserved, link annotations preserved. `compress-pdf.sh` checks and warns.
+- **Never use ghostscript's `-dFastWebView`.** It writes a corrupt linearization hint
+  table (`qpdf --check` reports `read_bits: too many bits requested`, and `pdfinfo`
+  warns on every read). The script linearizes with `qpdf --linearize` afterwards
+  instead, and runs `qpdf --check` as a regression guard.
 - The Og image/thumbnail in `docs/assets/` only needs regenerating if the *title* slide
   changed - compare page 1 text first.
 

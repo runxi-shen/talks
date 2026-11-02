@@ -29,11 +29,23 @@ else
 fi
 [ -x "$GS" ] || { echo "error: ghostscript not runnable at $GS" >&2; exit 1; }
 
+# qpdf is optional: it gives correct fast-web-view hint tables. Ghostscript's own
+# -dFastWebView writes a corrupt hint table (qpdf --check: "read_bits: too many
+# bits requested"), so never enable it on gs.
+QPDF=""
+if command -v qpdf >/dev/null 2>&1; then
+  QPDF="$(command -v qpdf)"
+elif command -v nix >/dev/null 2>&1; then
+  for p in $(nix build --no-link --print-out-paths nixpkgs#qpdf 2>/dev/null); do
+    if [ -x "$p/bin/qpdf" ]; then QPDF="$p/bin/qpdf"; break; fi
+  done
+fi
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 "$GS" -dNOPAUSE -dBATCH -dSAFER -sDEVICE=pdfwrite -dCompatibilityLevel=1.7 \
-  -dEmbedAllFonts=true -dSubsetFonts=true -dFastWebView=true \
+  -dEmbedAllFonts=true -dSubsetFonts=true \
   -dAutoFilterColorImages=false -dAutoFilterGrayImages=false \
   -dColorImageFilter=/DCTEncode -dGrayImageFilter=/DCTEncode \
   -dDownsampleColorImages=true -dColorImageDownsampleType=/Bicubic \
@@ -44,6 +56,15 @@ trap 'rm -rf "$tmp"' EXIT
   -dColorConversionStrategy=/sRGB -dJPEGQ="$quality" \
   -sOutputFile="$tmp/out.pdf" "$in" >"$tmp/gs.log" 2>&1 || {
     echo "error: ghostscript failed; log tail:" >&2; tail -20 "$tmp/gs.log" >&2; exit 1; }
+
+# Correct fast-web-view hint tables (gs output is otherwise structurally valid).
+if [ -n "$QPDF" ]; then
+  if "$QPDF" --linearize "$tmp/out.pdf" "$tmp/lin.pdf" 2>"$tmp/qpdf.log"; then
+    mv "$tmp/lin.pdf" "$tmp/out.pdf"
+  else
+    echo "note: qpdf --linearize failed; keeping non-linearized output" >&2
+  fi
+fi
 
 # Refuse to produce something worse than the input.
 in_size=$(wc -c <"$in"); out_size=$(wc -c <"$tmp/out.pdf")
@@ -70,4 +91,13 @@ printf '%-40s %6.2f MB -> %6.2f MB  (-%d%%)  %s dpi q%s\n' \
 
 if [ "$words_in" != "$words_out" ] && [ "$words_in" -gt 0 ]; then
   echo "warning: word count changed ($words_in -> $words_out) - inspect for dropped text" >&2
+fi
+
+# Structural validation. Ghostscript's -dFastWebView corrupts the hint table, so
+# this check exists to catch a regression if that flag ever sneaks back in.
+if [ -n "$QPDF" ]; then
+  if ! check=$("$QPDF" --check "$out" 2>&1); then
+    echo "warning: qpdf --check reported problems in $out:" >&2
+    printf '%s\n' "$check" | grep -iE 'error|warn' | head -5 >&2
+  fi
 fi
