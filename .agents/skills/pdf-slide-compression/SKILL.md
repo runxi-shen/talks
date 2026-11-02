@@ -6,8 +6,22 @@ description: Shrink slide-deck PDFs exported from PowerPoint/Keynote before comm
 # Slide deck pipeline: QA → compress → human review → publish
 
 Deck PDFs straight from PowerPoint/Keynote are ~10 MB because images are embedded at
-4K+ for a 10-inch-wide slide. Downsampling to 150 dpi takes them to ~2.5-3 MB (-70%)
-with vector text, fonts, and links intact.
+4K+ for a 10-inch-wide slide. Recompressing **only the images** to what 150 dpi can
+actually show takes them to ~60-65% smaller, with the text layer left byte-identical.
+
+## Why ghostscript is not used
+
+It was, and it corrupts these decks in the font path both ways round:
+
+| ghostscript setting | symptom |
+|---|---|
+| `-dSubsetFonts=true` (default) | ToUnicode map breaks: `Muñoz` → `Mu–oz`, `Alán` → `Al‡n`, bullets → `¥`, `…`/`–` dropped. Both published decks were shipped with this damage. |
+| `-dSubsetFonts=false` | accented text extracts correctly but **some glyphs stop rendering** - every citation on p3/p9 of SBI2 went invisible (11% ink → 0%). |
+
+No flag combination gives both, and whole-page pixel diffs cannot see the second
+failure: blanking the citations changed only ~0.4% of the page. Hence
+`compress-images.py` (pikepdf + Pillow) which never re-encodes a content stream, plus
+`verify-pdf.py`, which checks per-word visibility against a render of the source.
 
 ## Layout
 
@@ -91,23 +105,30 @@ correct - the human review in step 4 is still mandatory.
 Add domain vocabulary to stop false spelling hits, either in `BUILTIN_ALLOW` in
 `lint-slides.py` or per deck with `--words extra-terms.txt`.
 
+| Check | What it catches |
+|-------|-----------------|
+| pages | page count changed |
+| text | extracted text not byte-identical to the source |
+| non-ascii | accented chars, smart quotes, dashes corrupted |
+| visibility | a word has ink in the source render but none in the output (blanked glyphs) |
+| render | coarse per-page pixel diff, catches gross image damage |
+
+`compress-pdf.sh` runs this and **aborts** if any check fails, so a bad file cannot
+reach `preview/` unnoticed.
+
 ## Sizing guide
 
-Slide is 10 in wide, so `dpi x 10` = rendered pixel width.
+| dpi | SBI2 (29 slides) | IUSM (41 slides) |
+|-----|------------------|------------------|
+| 150 | 3.6 MB (-61%) | 4.4 MB (-62%) |
 
-| dpi | size (typical 29-slide deck) | use when |
-|-----|------------------------------|----------|
-| 150 | ~2.8 MB (-70%) | default; fine for on-screen reading |
-| 192 | ~3.6 MB (-60%) | projecting on 1080p, want zero softening |
-
-Below 150 dpi you stop saving much and start losing legibility on fine figures.
+Bigger than a ghostscript run (2.8/2.9 MB), because ghostscript also JPEG-encoded
+line art and already-fine images. Larger files, correct text.
 
 ## Pitfalls
 
-- **Never use ghostscript's `-dFastWebView`.** It writes a corrupt linearization
-  hint table (`qpdf --check`: `read_bits: too many bits requested`, and `pdfinfo`
-  warns on every read). The script linearizes with `qpdf --linearize` afterwards and
-  runs `qpdf --check` as a regression guard.
+- **Do not reintroduce ghostscript.** See the table above; both of its font modes are
+  broken here. If you must experiment, run `verify-pdf.py` before trusting anything.
 - **Never convert these decks to HTML.** Rasterised slides are bigger than the
   compressed PDF and destroy selectable text; PDF-to-HTML of designed decks reflows
   badly. Serve the PDF.
@@ -123,7 +144,9 @@ Below 150 dpi you stop saving much and start losing legibility on fine figures.
 ## Files
 
 - `scripts/lint-slides.py` - QA pass (`--json`, `--words`, `--strict`)
-- `scripts/compress-pdf.sh` - `<in> <out> [dpi] [quality]`
+- `scripts/compress-images.py` - image-only recompression, DPI from placed size
+- `scripts/verify-pdf.py` - text/non-ASCII/visibility/render verification
+- `scripts/compress-pdf.sh` - `<in> <out> [dpi] [quality]`; compresses then verifies
 - `scripts/stage-for-review.sh` - detect unconverted decks, QA, compress, compare page
 - `scripts/approve.sh` - interactive approval, copies into `docs/`
 - `scripts/make-comparison.py` - builds the side-by-side review page

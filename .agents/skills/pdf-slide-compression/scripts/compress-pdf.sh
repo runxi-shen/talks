@@ -1,73 +1,56 @@
 #!/usr/bin/env bash
-# Downsample + recompress a slide-deck PDF exported from PowerPoint/Keynote.
-# Text and vector art are left untouched; only oversized raster images shrink.
+# Shrink a slide-deck PDF: recompress raster images only, leave text untouched.
+#
+# Ghostscript is deliberately NOT used here. It corrupts these decks in the font
+# path both ways round: with -dSubsetFonts=true the ToUnicode map breaks
+# ('Muñoz' -> 'Mu–oz'), and with -dSubsetFonts=false glyphs stop rendering and
+# citations turn invisible. Re-encoding images only avoids both.
 #
 # Usage: compress-pdf.sh <in.pdf> <out.pdf> [dpi] [jpeg-quality]
-#   dpi           default 150  (192 = native 1080p for a 10in-wide slide)
-#   jpeg-quality  default 85
+#   dpi  default 150 - images are downsampled to what that resolution can show
+#        on the slide, based on their placed size.
 set -euo pipefail
 
-in="${1:?usage: compress-pdf.sh <in.pdf> <out.pdf> [dpi] [jpeg-quality]}"
-out="${2:?usage: compress-pdf.sh <in.pdf> <out.pdf> [dpi] [jpeg-quality]}"
+in="${1:?usage: compress-pdf.sh <in.pdf> <out.pdf> [dpi] [quality]}"
+out="${2:?usage: compress-pdf.sh <in.pdf> <out.pdf> [dpi] [quality]}"
 dpi="${3:-150}"
 quality="${4:-85}"
 
 [ -f "$in" ] || { echo "error: no such file: $in" >&2; exit 1; }
 
-# Ghostscript is not always on PATH; resolve it once via nix if needed.
-if command -v gs >/dev/null 2>&1; then
-  GS="$(command -v gs)"
-elif command -v nix >/dev/null 2>&1; then
-  # `nix build` can return several outputs (gs + docs); pick the one with bin/gs.
-  GS=""
-  for p in $(nix build --no-link --print-out-paths nixpkgs#ghostscript 2>/dev/null); do
-    if [ -x "$p/bin/gs" ]; then GS="$p/bin/gs"; break; fi
-  done
-else
-  echo "error: ghostscript not found (install gs, or make nix available)" >&2
-  exit 1
-fi
-[ -x "$GS" ] || { echo "error: ghostscript not runnable at $GS" >&2; exit 1; }
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# qpdf is optional: it gives correct fast-web-view hint tables. Ghostscript's own
-# -dFastWebView writes a corrupt hint table (qpdf --check: "read_bits: too many
-# bits requested"), so never enable it on gs.
-QPDF=""
-if command -v qpdf >/dev/null 2>&1; then
-  QPDF="$(command -v qpdf)"
+# --- locate a python with pikepdf + pillow --------------------------------
+PY=""
+if python3 -c 'import pikepdf, PIL' >/dev/null 2>&1; then
+  PY="$(command -v python3)"
 elif command -v nix >/dev/null 2>&1; then
-  for p in $(nix build --no-link --print-out-paths nixpkgs#qpdf 2>/dev/null); do
-    if [ -x "$p/bin/qpdf" ]; then QPDF="$p/bin/qpdf"; break; fi
-  done
+  cache="${TMPDIR:-/tmp}/pdf-compress-pyenv.path"
+  if [ -s "$cache" ] && [ -x "$(cat "$cache")/bin/python3" ]; then
+    PY="$(cat "$cache")/bin/python3"
+  else
+    env_path="$(nix build --impure --no-link --print-out-paths --expr \
+      'let f = builtins.getFlake "nixpkgs"; p = f.legacyPackages.${builtins.currentSystem};
+       in p.python3.withPackages (ps: [ ps.pikepdf ps.pillow ])' 2>/dev/null | tail -1)"
+    if [ -n "$env_path" ] && [ -x "$env_path/bin/python3" ]; then
+      printf '%s' "$env_path" >"$cache"
+      PY="$env_path/bin/python3"
+    fi
+  fi
+fi
+
+if [ -z "$PY" ]; then
+  echo "error: need python3 with pikepdf and pillow (or nix to fetch them)" >&2
+  exit 1
 fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-"$GS" -dNOPAUSE -dBATCH -dSAFER -sDEVICE=pdfwrite -dCompatibilityLevel=1.7 \
-  -dEmbedAllFonts=true -dSubsetFonts=false \
-  -dAutoFilterColorImages=false -dAutoFilterGrayImages=false \
-  -dColorImageFilter=/DCTEncode -dGrayImageFilter=/DCTEncode \
-  -dDownsampleColorImages=true -dColorImageDownsampleType=/Bicubic \
-  -dColorImageResolution="$dpi" \
-  -dDownsampleGrayImages=true -dGrayImageDownsampleType=/Bicubic \
-  -dGrayImageResolution="$dpi" \
-  -dDownsampleMonoImages=true -dMonoImageResolution=600 \
-  -dColorConversionStrategy=/sRGB -dJPEGQ="$quality" \
-  -sOutputFile="$tmp/out.pdf" "$in" >"$tmp/gs.log" 2>&1 || {
-    echo "error: ghostscript failed; log tail:" >&2; tail -20 "$tmp/gs.log" >&2; exit 1; }
+in_size=$(wc -c <"$in")
+"$PY" "$here/compress-images.py" "$in" "$tmp/out.pdf" --dpi "$dpi" --quality "$quality"
 
-# Correct fast-web-view hint tables (gs output is otherwise structurally valid).
-if [ -n "$QPDF" ]; then
-  if "$QPDF" --linearize "$tmp/out.pdf" "$tmp/lin.pdf" 2>"$tmp/qpdf.log"; then
-    mv "$tmp/lin.pdf" "$tmp/out.pdf"
-  else
-    echo "note: qpdf --linearize failed; keeping non-linearized output" >&2
-  fi
-fi
-
-# Refuse to produce something worse than the input.
-in_size=$(wc -c <"$in"); out_size=$(wc -c <"$tmp/out.pdf")
+out_size=$(wc -c <"$tmp/out.pdf")
 if [ "$out_size" -ge "$in_size" ]; then
   echo "note: output not smaller (${out_size} >= ${in_size}); copying input unchanged" >&2
   cp "$in" "$out"
@@ -76,11 +59,6 @@ fi
 
 mv "$tmp/out.pdf" "$out"
 
-# Sanity checks: page count, text, and links must survive.pages_in=$(strings "$in" | grep -c '/Type */Page[^s]' || true)
-pages_out=$(strings "$out" | grep -c '/Type */Page[^s]' || true)
-words_in=$(pdftotext "$in" - 2>/dev/null | wc -w | tr -d ' ' || echo 0)
-words_out=$(pdftotext "$out" - 2>/dev/null | wc -w | tr -d ' ' || echo 0)
-
 printf '%-40s %6.2f MB -> %6.2f MB  (-%d%%)  %s dpi q%s\n' \
   "$(basename "$out")" \
   "$(echo "$in_size/1048576" | bc -l)" \
@@ -88,36 +66,16 @@ printf '%-40s %6.2f MB -> %6.2f MB  (-%d%%)  %s dpi q%s\n' \
   "$(( 100 - out_size * 100 / in_size ))" \
   "$dpi" "$quality"
 
-if [ "$words_in" != "$words_out" ] && [ "$words_in" -gt 0 ]; then
-  echo "warning: word count changed ($words_in -> $words_out) - inspect for dropped text" >&2
-fi
-
-# Non-ASCII fidelity guard. Ghostscript's font subsetting (-dSubsetFonts=true)
-# silently corrupts the ToUnicode mapping, so accented names, smart quotes and
-# dashes come out as mojibake ('Muñoz' -> 'Mu–oz', '•' -> '¥'). That is why
-# subsetting is disabled above; this check fails loudly if it ever regresses.
-charset() {
-  pdftotext "$1" - 2>/dev/null | python3 -c "
-import sys, collections
-t = sys.stdin.read()
-c = collections.Counter(ch for ch in t if ord(ch) > 127)
-print(';'.join('%s:%d' % (ch, n) for ch, n in sorted(c.items())))
-"
-}
-if command -v pdftotext >/dev/null 2>&1; then
-  cin=$(charset "$in"); cout=$(charset "$out")
-  if [ "$cin" != "$cout" ]; then
-    echo "warning: non-ASCII text changed by compression (font/ToUnicode damage):" >&2
-    echo "  in : $cin" >&2
-    echo "  out: $cout" >&2
+# Text, non-ASCII, per-word visibility and a coarse render diff. Must pass:
+# the invisible-citation regression this replaced was invisible to every cheaper
+# check, so a failure here means the output is not fit to publish.
+if command -v pdftoppm >/dev/null 2>&1; then
+  if ! python3 "$here/verify-pdf.py" "$in" "$out" --quiet; then
+    echo "error: verification failed for $out - not fit to publish" >&2
+    echo "       inspect it, then re-run stage-for-review.sh" >&2
+    exit 1
   fi
-fi
-
-# Structural validation. Ghostscript's -dFastWebView corrupts the hint table, so
-# this check exists to catch a regression if that flag ever sneaks back in.
-if [ -n "$QPDF" ]; then
-  if ! check=$("$QPDF" --check "$out" 2>&1); then
-    echo "warning: qpdf --check reported problems in $out:" >&2
-    printf '%s\n' "$check" | grep -iE 'error|warn' | head -5 >&2
-  fi
+  echo "  verified: text identical, non-ASCII preserved, all words render"
+else
+  echo "warning: pdftoppm missing, skipped visual verification" >&2
 fi
