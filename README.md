@@ -74,7 +74,7 @@ exports hit ~10 MB. Images are downsampled; vector text, fonts, and links are ke
 
 ```sh
 # 1. QA + compress everything new/unconverted, then open a comparison page
-.agents/skills/pdf-slide-compression/scripts/stage-for-review.sh
+.agents/skills/pdf-slide-compression/scripts/pdf.sh stage
 
 # 2. read the QA reports and the comparison yourself
 cat preview/*-lint.txt        # typos, term inconsistency, layout problems
@@ -83,7 +83,7 @@ cat preview/*-lint.txt        # typos, term inconsistency, layout problems
 # 3. fix real issues in the source deck, re-export, re-run step 1
 
 # 4. if it all looks good, approve (interactive prompt; copies into docs/)
-.agents/skills/pdf-slide-compression/scripts/approve.sh
+.agents/skills/pdf-slide-compression/scripts/pdf.sh approve
 ```
 
 `talks-original/` is your source of truth and is never modified by the pipeline.

@@ -21,7 +21,8 @@ It was, and it corrupts these decks in the font path both ways round:
 No flag combination gives both, and whole-page pixel diffs cannot see the second
 failure: blanking the citations changed only ~0.4% of the page. Hence
 `compress-images.py` (pikepdf + Pillow) which never re-encodes a content stream, plus
-`verify-pdf.py`, which checks per-word visibility against a render of the source.
+the built-in `verify()` step, which checks per-word visibility against a render
+of the source.
 
 ## Layout
 
@@ -44,7 +45,7 @@ Before any `git add`/commit/push of a deck, the human must have:
 2. read the QA report.
 
 Do **not** decide on the human's behalf, do not skip the gate for a "small" change,
-and never run `approve.sh` yourself - it is interactive and refuses a non-tty stdin.
+and never run `pdf.sh approve` yourself - it is interactive and refuses a non-tty stdin.
 
 `.githooks/pre-commit` enforces this: staged PDFs over 4 MiB, or without an approval
 token in `.git/pdf-review-approved`, are rejected.
@@ -57,7 +58,7 @@ token in `.git/pdf-review-approved`, are rejected.
    It does **not** touch `docs/` and does **not** commit:
 
    ```bash
-   .agents/skills/pdf-slide-compression/scripts/stage-for-review.sh
+   .agents/skills/pdf-slide-compression/scripts/pdf.sh stage
    ```
 
    With no arguments it processes only decks that are new or newer than their
@@ -73,7 +74,7 @@ token in `.git/pdf-review-approved`, are rejected.
 5. The human runs the gate themselves:
 
    ```bash
-   .agents/skills/pdf-slide-compression/scripts/approve.sh
+   .agents/skills/pdf-slide-compression/scripts/pdf.sh approve
    ```
 
    It prompts for `approved`, copies the compressed files into `docs/`, and records
@@ -113,7 +114,7 @@ Add domain vocabulary to stop false spelling hits, either in `BUILTIN_ALLOW` in
 | visibility | a word has ink in the source render but none in the output (blanked glyphs) |
 | render | coarse per-page pixel diff, catches gross image damage |
 
-`compress-pdf.sh` runs this and **aborts** if any check fails, so a bad file cannot
+`compress-images.py` runs this and **aborts** if any check fails, so a bad file cannot
 reach `preview/` unnoticed.
 
 ## Sizing guide
@@ -128,7 +129,7 @@ line art and already-fine images. Larger files, correct text.
 ## Pitfalls
 
 - **Do not reintroduce ghostscript.** See the table above; both of its font modes are
-  broken here. If you must experiment, run `verify-pdf.py` before trusting anything.
+  broken here. If you must experiment, run `pdf.sh compress` and read the verification output.
 - **Never convert these decks to HTML.** Rasterised slides are bigger than the
   compressed PDF and destroy selectable text; PDF-to-HTML of designed decks reflows
   badly. Serve the PDF.
@@ -139,15 +140,13 @@ line art and already-fine images. Larger files, correct text.
 - The preview thumbnail in `docs/assets/` only needs regenerating if the **title**
   slide changed - compare page 1 text first.
 - Verify after compressing: same page count, same word count, fonts and link
-  annotations preserved. `compress-pdf.sh` checks and warns.
+  annotations preserved. Verification does this automatically.
 
 ## Files
 
+- `scripts/pdf.sh` - `stage` (detect + lint + compress + compare page), `approve`
+  (interactive publish), `compress IN OUT [dpi]` (one-off)
+- `scripts/compress-images.py` - image-only recompression (DPI from placed size),
+  then verification; exits 1 rather than emit a file that fails the checks
 - `scripts/lint-slides.py` - QA pass (`--json`, `--words`, `--strict`)
-- `scripts/compress-images.py` - image-only recompression, DPI from placed size
-- `scripts/verify-pdf.py` - text/non-ASCII/visibility/render verification
-- `scripts/compress-pdf.sh` - `<in> <out> [dpi] [quality]`; compresses then verifies
-- `scripts/stage-for-review.sh` - detect unconverted decks, QA, compress, compare page
-- `scripts/approve.sh` - interactive approval, copies into `docs/`
-- `scripts/make-comparison.py` - builds the side-by-side review page
 - `.githooks/pre-commit` - blocks oversized or unreviewed PDFs
