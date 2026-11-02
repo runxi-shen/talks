@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Human approval gate. Run this AFTER eyeballing preview/compare.html.
+# Human approval gate. Run this AFTER reviewing preview/compare.html and
+# preview/*-lint.txt.
 #
-# It asks you to confirm in the terminal (the agent cannot answer for you),
-# then swaps the reviewed compressed PDFs into docs/, archives the full-res
-# originals outside the repo, and records an approval token so the pre-commit
-# hook will accept the commit.
+# It asks you to confirm in the terminal (an agent cannot answer for you), then
+# copies the reviewed compressed PDFs into docs/ and records an approval token
+# so the pre-commit hook will accept the commit. talks-original/ is never
+# modified - it stays the untouched source of truth.
 #
-# Usage: approve.sh [pdf ...]          # default: every staged pair
+# Usage: approve.sh [deck ...]      # default: everything currently staged
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 dpi="${DPI:-150}"
+pub_dir="docs"
 preview="preview"
 manifest="$preview/.stage-manifest"
-masters="${MASTERS_DIR:-$HOME/Documents/talks-masters-original}"
 token="$repo_root/.git/pdf-review-approved"
 
 [ -f "$manifest" ] || {
@@ -25,8 +25,8 @@ token="$repo_root/.git/pdf-review-approved"
 }
 
 pairs=()
-while IFS=$'\t' read -r _ orig comp; do
-  [ -f "$orig" ] && [ -f "$comp" ] && pairs+=("$orig" "$comp")
+while IFS=$'\t' read -r _ src comp; do
+  [ -f "$src" ] && [ -f "$comp" ] && pairs+=("$src" "$comp")
 done <"$manifest"
 
 if [ "${#pairs[@]}" -eq 0 ]; then
@@ -35,29 +35,49 @@ if [ "${#pairs[@]}" -eq 0 ]; then
 fi
 
 if [ "$#" -gt 0 ]; then
-  wanted=("$@")
   filtered=()
   for ((i = 0; i < ${#pairs[@]}; i += 2)); do
-    for w in "${wanted[@]}"; do
-      if [ "$(basename "${pairs[$i]}")" = "$(basename "$w")" ] || [ "${pairs[$i]}" = "$w" ]; then
+    for w in "$@"; do
+      if [ "$(basename "${pairs[$i]}")" = "$(basename "$w")" ]; then
         filtered+=("${pairs[$i]}" "${pairs[$((i + 1))]}")
       fi
     done
   done
+  if [ "${#filtered[@]}" -eq 0 ]; then
+    echo "error: none of the given decks are currently staged" >&2
+    exit 1
+  fi
   pairs=("${filtered[@]}")
 fi
 
 echo "Pending approval:"
 for ((i = 0; i < ${#pairs[@]}; i += 2)); do
-  orig="${pairs[$i]}"
-  comp="${pairs[$((i + 1))]}"
-  printf '  %-42s %6.2f MB -> %6.2f MB\n' "$orig" \
-    "$(echo "$(wc -c <"$orig")/1048576" | bc -l)" \
+  src="${pairs[$i]}"
+  comp="${pairs[$i + 1]}"
+  printf '  %-44s %6.2f MB -> %6.2f MB\n' "$(basename "$src")" \
+    "$(echo "$(wc -c <"$src")/1048576" | bc -l)" \
     "$(echo "$(wc -c <"$comp")/1048576" | bc -l)"
 done
 echo
-echo "Have you actually looked at $preview/compare.html and confirmed the"
-echo "compressed slides are sharp enough? Reviewing is the whole point of this gate."
+
+lint_reports=()
+for ((i = 0; i < ${#pairs[@]}; i += 2)); do
+  base="$(basename "${pairs[$i]}" .pdf)"
+  [ -f "$preview/${base}-lint.txt" ] && lint_reports+=("$preview/${base}-lint.txt")
+done
+if [ "${#lint_reports[@]}" -gt 0 ]; then
+  echo "QA reports (${#lint_reports[@]}):"
+  printf '  %s\n' "${lint_reports[@]}"
+  if grep -qE '^\s+(high|medium)\s' "${lint_reports[@]}" 2>/dev/null; then
+    echo
+    echo "  ⚠ some high/medium findings remain. Confirm they are acceptable"
+    echo "    (or fix the source deck and re-run stage-for-review.sh)."
+  fi
+  echo
+fi
+
+echo "Have you looked at preview/compare.html and the QA reports, and confirmed"
+echo "the slides are correct and sharp enough?"
 echo
 
 if [ ! -t 0 ]; then
@@ -66,29 +86,27 @@ if [ ! -t 0 ]; then
   exit 1
 fi
 
-printf 'Type "approved" to swap in the compressed files: '
+printf 'Type "approved" to publish the compressed files: '
 read -r answer
 if [ "$answer" != "approved" ]; then
-  echo "aborted; docs/ untouched."
+  echo "aborted; $pub_dir/ untouched."
   exit 1
 fi
 
-mkdir -p "$masters"
 : >>"$token"
 for ((i = 0; i < ${#pairs[@]}; i += 2)); do
-  orig="${pairs[$i]}"
-  comp="${pairs[$((i + 1))]}"
-  cp -p "$orig" "$masters/$(basename "$orig")"
-  cp "$comp" "$orig"
-  sum="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
-  grep -v " $(printf '%s' "$orig")\$" "$token" >"$token.tmp" 2>/dev/null || true
+  comp="${pairs[$i + 1]}"
+  base="$(basename "${pairs[$i]}")"
+  dest="$pub_dir/$base"
+  cp "$comp" "$dest"
+  sum="$(shasum -a 256 "$dest" | cut -d' ' -f1)"
+  grep -v " $(printf '%s' "$dest")\$" "$token" >"$token.tmp" 2>/dev/null || true
   mv "$token.tmp" "$token"
-  printf '%s %s\n' "$sum" "$orig" >>"$token"
-  printf 'approved+swapped %-42s %6.2f MB\n' "$orig" \
-    "$(echo "$(wc -c <"$orig")/1048576" | bc -l)"
+  printf '%s %s\n' "$sum" "$dest" >>"$token"
+  printf 'approved %-44s %6.2f MB\n' "$dest" "$(echo "$(wc -c <"$dest")/1048576" | bc -l)"
 done
 
 echo
-echo "Full-res originals archived in: $masters"
+echo "Sources left untouched in talks-original/."
 echo "Now commit, e.g.:"
-echo "  git add docs/ && git commit -m 'docs(slides): update <deck>' && git push"
+echo "  git add $pub_dir/ && git commit -m 'docs(slides): publish <deck>' && git push"

@@ -1,2 +1,4 @@
 .DS_Store
 preview/
+# Full-res slide exports (sources for compression, not published)
+talks-original/
