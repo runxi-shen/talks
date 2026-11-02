@@ -8,7 +8,7 @@
 # Emergency override: ALLOW_UNREVIEWED_PDF=1 git commit ...
 set -euo pipefail
 
-max_bytes="${MAX_PDF_BYTES:-4194304}"
+max_bytes="${MAX_PDF_BYTES:-6291456}"  # 6 MiB: correct compression yields 3.6-4.4 MB, raw exports 9-12 MB
 max_mb=$((max_bytes / 1048576))
 token_file="$(git rev-parse --git-dir)/pdf-review-approved"
 failed=0
