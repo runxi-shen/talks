@@ -18,8 +18,11 @@ docs/                              # Published website (URL root)
   assets/                          # Slide preview images
     SBI2-2026.png
     IUSM-CCBB-2026.png
+    MIT-ChemBio-2026-youtube.jpg
   SBI2-2026.pdf
   IUSM-CCBB-CarpenterShen-2026.pdf
+  MIT_Chem_Biology_Guest_Lecture-2026.pdf
+preview/                                # Review candidates and QA (gitignored)
 talks-original/                         # Full-res exports (gitignored)
 .agents/skills/pdf-slide-compression/   # Skill: QA + compress + review gate
 .githooks/pre-commit                    # Blocks oversized/unreviewed PDFs
@@ -55,14 +58,21 @@ same once the new source is deployed. No dependencies or build commands are need
 2. Run the QA + compression pipeline and review it before committing — see below.
    Compression only changes raster images; text, fonts and links are preserved.
    Size savings vary by deck. `docs/` only receives reviewed compressed files.
-3. Save a first-slide preview in `docs/assets/`. Use the image's actual width and
-   height in the page; the current previews are 1200 × 675 pixels.
+3. Save a first-slide preview or YouTube thumbnail in `docs/assets/`. Use the
+   image's actual width and height in the page.
 4. Copy a `<article class="talk">` block in `docs/index.html` and update its title,
    event, speakers, date, PDF links, preview, file size, and slide count. Give the
    title a unique `id` and match `aria-labelledby`. Use relative filenames in
    links, without a `docs/` prefix. Keep newest talks first, grouped by year.
-5. Commit and push the PDF, preview, and updated page. Wait for deployment and
-   verify the view and download links.
+5. Commit and push the approved PDF, thumbnail, and updated page. Do not add
+   `preview/` or `talks-original/`, even with `git add -f`. Wait for deployment
+   and verify the view, download, and video links.
+
+Recorded talks go in the **Featured talks** section, above the chronological
+collection, in the desired pinned order. Link the thumbnail and watch button to
+YouTube, and the PDF buttons to the local file in `docs/`. Do not duplicate the
+same talk in the collection. Videos are linked rather than embedded, so the page
+loads without a YouTube player.
 
 Share the HTTPS PDF address in email and QR codes. To correct slides, replace the
 same file; for a distinct talk, use a new filename. Downloads work without JavaScript.

@@ -42,18 +42,21 @@ def walk(obj, ctm, placements, ancestors=(), resources=None):
         elif op == 'Q' and stack:
             ctm = stack.pop()
         elif op == 'cm':
-            ctm = compose(tuple(float(x) for x in operands), ctm)
+            # Some PDFium exports contain malformed numbers. Do not guess a
+            # scale for this graphics state; leave affected images untouched.
+            ctm = compose(tuple(float(x) for x in operands), ctm) if ctm is not None and len(operands) == 6 else None
         elif op == 'Do':
             xobj = resources.get('/XObject', {}).get(operands[0])
             if xobj is None:
                 continue
             if xobj.get('/Subtype') == pikepdf.Name.Image:
                 prev = placements.get(xobj.objgen, (0.0, 0.0))
-                placements[xobj.objgen] = (max(prev[0], hypot(*ctm[:2])),
-                                          max(prev[1], hypot(*ctm[2:4])))
+                placements[xobj.objgen] = None if ctm is None or prev is None else (
+                    max(prev[0], hypot(*ctm[:2])), max(prev[1], hypot(*ctm[2:4])))
             elif xobj.get('/Subtype') == pikepdf.Name.Form and xobj.objgen not in ancestors:
                 matrix = tuple(float(x) for x in xobj.get('/Matrix', IDENTITY))
-                walk(xobj, compose(matrix, ctm), placements,
+                inner = compose(matrix, ctm) if ctm is not None and len(matrix) == 6 else None
+                walk(xobj, inner, placements,
                      ancestors + (xobj.objgen,), resources)
 
 
@@ -169,7 +172,7 @@ def compress(src, dst, dpi=150, quality=85):
             # Their byte savings aren't worth risking transparency or colour bugs.
             if (obj.objgen in masks or obj.get('/ImageMask', False)
                     or any(k in obj for k in ('/Decode', '/Mask', '/SMaskInData'))
-                    or obj.objgen not in placements):
+                    or placements.get(obj.objgen) is None):
                 continue
             colour = obj.get('/ColorSpace')
             channels = {pikepdf.Name.DeviceRGB: 'RGB', pikepdf.Name.DeviceGray: 'L'}

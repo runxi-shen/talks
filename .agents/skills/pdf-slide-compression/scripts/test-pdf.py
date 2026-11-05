@@ -82,6 +82,20 @@ class CompressionTests(unittest.TestCase):
             compression.walk(page, compression.IDENTITY, sizes)
             self.assertEqual(sizes[form.Resources.XObject.Im.objgen], (300, 200))
 
+    def test_malformed_transform_leaves_shared_image_unmeasured(self):
+        with pikepdf.open(self.src) as pdf:
+            page = pdf.pages[0]
+            other = pdf.make_stream(b'')
+            other.Subtype = pikepdf.Name.Image
+            page.Resources.XObject.Other = other
+            page.Contents = pdf.make_stream(
+                b'q 1 0 0 1 cm /Im Do Q '
+                b'q 180 0 0 135 0 0 cm /Other Do /Im Do Q')
+            sizes = {}
+            compression.walk(page, compression.IDENTITY, sizes)
+            self.assertIsNone(sizes[page.Resources.XObject.Im.objgen])
+            self.assertEqual(sizes[other.objgen], (180, 135))
+
     def test_invisible_citation_is_rejected(self):
         with pikepdf.open(self.src) as pdf:
             page = pdf.pages[0]
