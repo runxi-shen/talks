@@ -1,152 +1,91 @@
 ---
 name: pdf-slide-compression
-description: Shrink slide-deck PDFs exported from PowerPoint/Keynote before committing them to this repo, QA them for typos and layout problems, and enforce human review of the result. Use whenever a new or updated deck lands in talks-original/ or docs/ (new talk, revised slides, "update the deck", "corrections"), or when the pre-commit hook complains about an oversized PDF.
+description: QA, compress and review new or corrected slide PDFs in this talks repo. Use when an export arrives in talks-original/, a deck needs publishing, or the PDF review hook blocks a commit. Never publish a PDF without the user's visual inspection and approval.
 ---
 
-# Slide deck pipeline: QA → compress → human review → publish
-
-Deck PDFs straight from PowerPoint/Keynote are ~10 MB because images are embedded at
-4K+ for a 10-inch-wide slide. Recompressing **only the images** to what 150 dpi can
-actually show takes them to ~60-65% smaller, with the text layer left byte-identical.
-
-## Why ghostscript is not used
-
-It was, and it corrupts these decks in the font path both ways round:
-
-| ghostscript setting | symptom |
-|---|---|
-| `-dSubsetFonts=true` (default) | ToUnicode map breaks: `Muñoz` → `Mu–oz`, `Alán` → `Al‡n`, bullets → `¥`, `…`/`–` dropped. Both published decks were shipped with this damage. |
-| `-dSubsetFonts=false` | accented text extracts correctly but **some glyphs stop rendering** - every citation on p3/p9 of SBI2 went invisible (11% ink → 0%). |
-
-No flag combination gives both, and whole-page pixel diffs cannot see the second
-failure: blanking the citations changed only ~0.4% of the page. Hence
-`compress-images.py` (pikepdf + Pillow) which never re-encodes a content stream, plus
-the built-in `verify()` step, which checks per-word visibility against a render
-of the source.
-
-## Layout
-
-```
-talks-original/     full-res exports, GITIGNORED - the source of truth
-docs/               published, compressed PDFs only (this is the website)
-preview/            review scratch, GITIGNORED
-```
-
-Never edit `docs/*.pdf` by hand and never compress an already-compressed file
-(repeated JPEG passes accumulate loss). `docs/` is generated output: it only ever
-receives files that came through `talks-original/`.
-
-## Hard rule: never commit a PDF a human has not looked at
-
-Compression is lossy on photos, and the QA pass cannot judge scientific accuracy.
-Before any `git add`/commit/push of a deck, the human must have:
-
-1. seen the side-by-side comparison, and
-2. read the QA report.
-
-Do **not** decide on the human's behalf, do not skip the gate for a "small" change,
-and never run `pdf.sh approve` yourself - it is interactive and refuses a non-tty stdin.
-
-`.githooks/pre-commit` enforces this: staged PDFs over 4 MiB, or without an approval
-token in `.git/pdf-review-approved`, are rejected.
-
-## Workflow
-
-1. Export slides to PDF and drop the file into `talks-original/`.
-
-2. Stage it for review. This runs QA, compresses, and builds the comparison page.
-   It does **not** touch `docs/` and does **not** commit:
-
-   ```bash
-   .agents/skills/pdf-slide-compression/scripts/pdf.sh stage
-   ```
-
-   With no arguments it processes only decks that are new or newer than their
-   published copy. Options: `NAME.pdf` for one deck, `--all` to restage everything,
-   `DPI=192` for higher quality.
-
-3. **Read `preview/*-lint.txt`** and fix real problems **in the source deck**, then
-   re-export and re-run step 2. Do not "fix" typos by editing the PDF.
-
-4. **Hand the comparison to the human** (`preview/compare.html`, open automatically).
-   Report the size numbers and the QA summary. Wait for an explicit yes.
-
-5. The human runs the gate themselves:
-
-   ```bash
-   .agents/skills/pdf-slide-compression/scripts/pdf.sh approve
-   ```
-
-   It prompts for `approved`, copies the compressed files into `docs/`, and records
-   an approval token. `talks-original/` is never modified.
-
-6. Commit and push:
-
-   ```bash
-   git add docs/ && git commit -m "docs(slides): publish <deck>" && git push
-   ```
-
-## The QA pass (`lint-slides.py`)
-
-Runs before compression and reports pointers, not verdicts.
-
-| Check | What it catches |
-|-------|-----------------|
-| spelling | unknown words, via hunspell (nix) or `/usr/share/dict/words` |
-| typos | doubled words (`from from`), double spaces, space before punctuation, missing space after comma/colon, repeated punctuation |
-| consistency | same term spelled differently across slides (`Cell Painting` / `Cell-Painting`, `in vivo` / `in-vivo`, `Single-cell` / `single-cell`), mixed straight/curly quotes, number formats |
-| citations | `et al.` with no year, mixed `Figure` / `Fig.` / `Table` / `Tab.` styles, gaps in numbered refs |
-| layout | text outside the page box, overlapping text runs, font-size outliers, dense slides |
-
-**It cannot**: verify a claim is scientifically correct, read text baked into images
-(most of a figure), confirm a citation exists, or judge whether a sentence reads
-well. Grammar is only checked mechanically. Sparse findings do not mean the deck is
-correct - the human review in step 4 is still mandatory.
-
-Add domain vocabulary to stop false spelling hits, either in `BUILTIN_ALLOW` in
-`lint-slides.py` or per deck with `--words extra-terms.txt`.
-
-| Check | What it catches |
-|-------|-----------------|
-| pages | page count changed |
-| text | extracted text not byte-identical to the source |
-| non-ascii | accented chars, smart quotes, dashes corrupted |
-| visibility | a word has ink in the source render but none in the output (blanked glyphs) |
-| render | coarse per-page pixel diff, catches gross image damage |
-
-`compress-images.py` runs this and **aborts** if any check fails, so a bad file cannot
-reach `preview/` unnoticed.
-
-## Sizing guide
-
-| dpi | SBI2 (29 slides) | IUSM (41 slides) |
-|-----|------------------|------------------|
-| 150 | 3.6 MB (-61%) | 4.4 MB (-62%) |
-
-Bigger than a ghostscript run (2.8/2.9 MB), because ghostscript also JPEG-encoded
-line art and already-fine images. Larger files, correct text.
-
-## Pitfalls
-
-- **Do not reintroduce ghostscript.** See the table above; both of its font modes are
-  broken here. If you must experiment, run `pdf.sh compress` and read the verification output.
-- **Never convert these decks to HTML.** Rasterised slides are bigger than the
-  compressed PDF and destroy selectable text; PDF-to-HTML of designed decks reflows
-  badly. Serve the PDF.
-- **Don't rely on `git status` to spot repo bloat.** `git add` writes blobs even if
-  you never commit, and reflogs keep old history alive. After a rewrite or a staging
-  test, check `du -sh .git` and `git count-objects -vH`, then
-  `git reflog expire --expire=now --all && git gc --prune=now`.
-- The preview thumbnail in `docs/assets/` only needs regenerating if the **title**
-  slide changed - compare page 1 text first.
-- Verify after compressing: same page count, same word count, fonts and link
-  annotations preserved. Verification does this automatically.
+# Slide PDFs: QA → compress → review → publish
 
 ## Files
 
-- `scripts/pdf.sh` - `stage` (detect + lint + compress + compare page), `approve`
-  (interactive publish), `compress IN OUT [dpi]` (one-off)
-- `scripts/compress-images.py` - image-only recompression (DPI from placed size),
-  then verification; exits 1 rather than emit a file that fails the checks
-- `scripts/lint-slides.py` - QA pass (`--json`, `--words`, `--strict`)
-- `.githooks/pre-commit` - blocks oversized or unreviewed PDFs
+- `talks-original/`: full-resolution exports, **gitignored**; never overwrite them.
+- `preview/`: compressed candidates, QA reports and comparison page, **gitignored**.
+- `docs/`: published PDFs. Keep existing public filenames stable.
+
+Only three production scripts: `scripts/pdf.sh` orchestrates the workflow,
+`scripts/compress-images.py` compresses and verifies, and `scripts/lint-slides.py`
+provides QA pointers. `scripts/test-pdf.py` is the regression suite.
+
+## Workflow
+
+Run from the repository root (resolve these commands relative to this skill's
+`scripts/` directory if working elsewhere):
+
+```sh
+.agents/skills/pdf-slide-compression/scripts/pdf.sh stage
+# One deck: append SBI2-2026.pdf. All decks: append --all.
+# Higher image resolution: prefix with DPI=192.
+```
+
+This detects new/newer exports in `talks-original/`, lints them **before**
+compression, verifies the result and opens `preview/compare.html`.
+`docs/` remains untouched. Detection uses modification times: when unsure, give an
+explicit filename or `--all`; do not touch timestamps to hide pending work.
+
+1. Read `preview/*-lint.txt`. Report likely typos, term/style inconsistencies,
+   citation pointers and layout warnings **with slide numbers**. Fix real issues
+   in the editable deck, re-export to `talks-original/`, and restage.
+2. Ask the user to inspect the original/compressed comparison, especially citations,
+   fine figure labels, transparency and photo detail. Wait for their approval.
+3. The **user** runs the interactive gate:
+
+   ```sh
+   .agents/skills/pdf-slide-compression/scripts/pdf.sh approve
+   # Append a filename to approve only that deck.
+   ```
+
+   It checks that both source and preview still match the reviewed hashes, copies
+   into `docs/`, and records local approval. Changed files require restaging.
+4. Update `docs/index.html` sizes and page counts from the actual approved PDFs.
+   Update `docs/assets/` only if the title slide changed.
+5. Commit only the approved PDFs and associated website edits; push and check the
+   live site. Do not rewrite history or change unrelated decks.
+
+**Never manufacture approval tokens, simulate the user's terminal, bypass the hook,
+copy candidates into docs/ yourself, or treat automated checks as visual approval.**
+The local hook must be enabled per clone: `git config core.hooksPath .githooks`.
+It rejects staged PDFs without matching approval (including renames), and PDFs over
+6 MiB. A reviewed deck may legitimately need a higher `MAX_PDF_BYTES`; do not
+reduce quality merely to satisfy a size cap.
+
+## Compression safeguards
+
+- Use pikepdf + Pillow for **images only**. Do not reintroduce Ghostscript: its font
+  rewriting previously broke Unicode extraction and made citations invisible.
+- Default target: 150 DPI at each image's largest measured placement, JPEG quality
+  85. Unmeasured images, alpha masks and unsupported colour/encoding cases stay
+  untouched. Always compress the original export, never a published/compressed PDF.
+- Before replacing an output: require successful Poppler tools, matching page
+  counts, exact extracted text, matching render dimensions and a per-word ink
+  comparison against the source. Failures abort without replacing existing output.
+- Text-visibility checks are **heuristics**. They do not certify figures, colours,
+  scientific claims, citation accuracy, grammar or text baked into images. The QA
+  report is advisory too; it explicitly reports unavailable spell checking.
+
+## Dependencies and tests
+
+Python 3 with `pikepdf` and `Pillow`, plus Poppler (`pdfinfo`, `pdftotext`,
+`pdftoppm`). `pdf.sh` uses installed Python packages or a cached Nix environment.
+Hunspell + its `en_US` dictionary enables automated spell checking; without it,
+the report says the check is unavailable, not that spelling passed. Agents must
+still proofread the extracted slide text and report likely errors before asking
+for visual approval. Help, no-op staging and approval never fetch dependencies.
+
+```sh
+# Use the Python environment containing pikepdf and Pillow:
+python3 .agents/skills/pdf-slide-compression/scripts/test-pdf.py -v
+```
+
+Tests generate their own PDFs and disposable repository; never stage test exports
+in the real repo. Do not delete reflogs or prune history as routine cleanup.
+
+`talks-original/` is ignored, not backed up by Git. Keep an independent backup.

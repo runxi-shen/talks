@@ -9,18 +9,16 @@ It cannot verify whether a claim is scientifically correct, cannot read text
 baked into images, and cannot check citations against reality.
 
 Checks:
-  spelling      unknown words (hunspell, else /usr/share/dict/words)
+  spelling      unknown words (requires installed hunspell + en_US dictionary)
   typos         doubled words, double spaces, space-before-punctuation,
                 missing space after punctuation, repeated punctuation
   consistency   terms that vary in hyphenation/spacing/capitalisation,
                 straight vs curly quotes mixed within one deck,
                 number-format variants (1,000 vs 1000)
-  citations     "et al." without a year, "Figure"/"Fig." and "Table"/"Tab."
-                mixed styles, bracketed refs out of sequence, author-year
-                patterns with a missing year
-  layout        text outside the page box, text lines overlapping other text,
-                font-size outliers via glyph-box heights, very dense slides,
-                very large empty areas (possible export/crop error)
+  citations     "et al." without a nearby year, inconsistent figure/table
+                abbreviations, gaps in bracketed reference numbers
+  layout        text outside the page box, possible text overlaps,
+                small-text outliers and dense slides
 
 Exit code: 0 always unless --strict, so this never silently blocks a review.
 """
@@ -61,36 +59,27 @@ def poppler():
 
 
 def pages_of(pdf):
-    out = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
+    out = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True, check=True).stdout
     m = re.search(r"^Pages:\s+(\d+)", out, re.M)
-    return int(m.group(1)) if m else 0
+    if not m or int(m.group(1)) < 1:
+        raise ValueError(f"Cannot determine page count: {pdf}")
+    return int(m.group(1))
 
 
-def text_of(pdf, page, layout=False):
-    """Plain text by default. -layout pads columns with spaces, which creates
-    bogus 'double space' and 'doubled word' hits on diagram-heavy slides."""
-    cmd = ["pdftotext", "-f", str(page), "-l", str(page)]
-    if layout:
-        cmd.append("-layout")
-    r = subprocess.run(cmd + [pdf, "-"], capture_output=True, text=True)
-    return r.stdout
+def text_of(pdf, page):
+    # -layout padding creates bogus double-space/doubled-word findings.
+    return subprocess.run(["pdftotext", "-f", str(page), "-l", str(page), pdf, "-"],
+                          capture_output=True, text=True, check=True).stdout
 
 
 def bbox_of(pdf, page):
     """Parse pdftotext -bbox into a list of (page, word, xmin, ymin, xmax, ymax)."""
     r = subprocess.run(
         ["pdftotext", "-f", str(page), "-l", str(page), "-bbox", pdf, "-"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=True,
     )
     words = []
-    try:
-        root = ET.fromstring(r.stdout)
-    except ET.ParseError:
-        # pdftotext prefixes a doctype-less xml decl sometimes; retry leniently
-        try:
-            root = ET.fromstring(r.stdout[r.stdout.index("<html"):])
-        except (ValueError, ET.ParseError):
-            return words, (0, 0)
+    root = ET.fromstring(r.stdout)
     ns = {"x": root.tag.split("}")[0].strip("{")} if "}" in root.tag else {}
     pre = "{%s}" % ns["x"] if ns else ""
     pw = ph = 0.0
@@ -111,44 +100,26 @@ def bbox_of(pdf, page):
 
 
 # --- spell checking --------------------------------------------------------
-def hunter():
-    """Return (checker_fn, name). Prefers hunspell via PATH or nix."""
+def spell_checker():
+    """Use an installed dictionary; never silently claim a failed checker passed."""
     exe = shutil.which("hunspell")
-    if not exe and shutil.which("nix"):
-        try:
-            paths = subprocess.run(
-                ["nix", "build", "--no-link", "--print-out-paths", "nixpkgs#hunspell"],
-                capture_output=True, text=True, timeout=180,
-            ).stdout.split()
-            for p in paths:
-                cand = os.path.join(p, "bin", "hunspell")
-                if os.access(cand, os.X_OK):
-                    exe = cand
-                    break
-        except (subprocess.SubprocessError, OSError):
+    if exe:
+        probe = subprocess.run([exe, "-l", "-d", "en_US"], input="hello\n",
+                               capture_output=True, text=True)
+        if probe.returncode != 0:
             exe = None
-
     if exe:
         def check(words):
             proc = subprocess.run(
                 [exe, "-l", "-d", "en_US"], input="\n".join(words),
                 capture_output=True, text=True,
             )
-            if proc.returncode not in (0, 1):
-                return None
+            if proc.returncode != 0:
+                raise RuntimeError(f"hunspell failed: {proc.stderr.strip()}")
             return {w.strip() for w in proc.stdout.splitlines() if w.strip()}
         return check, "hunspell"
 
-    dict_path = "/usr/share/dict/words"
-    if os.path.exists(dict_path):
-        with open(dict_path, encoding="utf-8", errors="ignore") as fh:
-            known = {w.strip().lower() for w in fh if w.strip()}
-
-        def check(words):
-            return {w for w in words if w.lower() not in known}
-        return check, "/usr/share/dict/words"
-
-    return None, "none"
+    return None, "unavailable"
 
 
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z'’\-]*[A-Za-z]|[A-Za-z]")
@@ -169,7 +140,7 @@ def main():
 
     n_pages = pages_of(pdf)
     allow = set(BUILTIN_ALLOW)
-    if args.words and os.path.exists(args.words):
+    if args.words:
         with open(args.words, encoding="utf-8") as fh:
             allow |= {w.strip().lower() for w in fh if w.strip()}
 
@@ -183,7 +154,7 @@ def main():
     for p in range(1, n_pages + 1):
         t = text_of(pdf, p)
         pages[p] = t
-        per_page_words[p] = [w for w in WORD_RE.findall(t)]
+        per_page_words[p] = WORD_RE.findall(t)
 
     # ---- typos / mechanical ----
     for p in range(1, n_pages + 1):
@@ -202,7 +173,7 @@ def main():
             add("typos", p, f"repeated punctuation: '{m.group(0)}'", "low")
 
     # ---- spelling ----
-    checker, engine = hunter()
+    checker, engine = spell_checker()
     unknown = {}
     if checker:
         # Keep casing so we can report it as it appears; skip all-caps and numbers.
@@ -214,22 +185,22 @@ def main():
                     continue
                 if w.isupper():                      # acronyms
                     continue
-                if re.search(r"\d", w):
-                    continue
                 if "-" in wl:                        # check each half separately
                     for part in wl.split("-"):
                         if len(part) >= 3 and part not in allow:
                             candidates.add(part)
                     continue
                 candidates.add(wl)
-        bad = checker(sorted(candidates)) or set()
+        bad = checker(sorted(candidates))
         for p in range(1, n_pages + 1):
             for w in per_page_words[p]:
-                wl = w.lower().strip("-'’")
-                if wl in bad and len(wl) >= 3:
-                    unknown.setdefault(wl, []).append(p)
+                for wl in w.lower().strip("-'’").split("-"):
+                    if wl in bad and len(wl) >= 3:
+                        unknown.setdefault(wl, []).append(p)
         for w, pgs in sorted(unknown.items()):
             add("spelling", sorted(set(pgs)), f"unknown word: '{w}'", "medium")
+    else:
+        add("spelling", "-", "Spell check unavailable: install hunspell + en_US dictionary", "info")
 
     # ---- consistency ----
     full = "\n".join(pages[p] for p in range(1, n_pages + 1))
@@ -241,12 +212,12 @@ def main():
     for w in set(WORD_RE.findall(full)):
         if len(w) < 4:
             continue
-        if "-" in w or " " in w:
+        if "-" in w:
             groups.setdefault(variant_key(w), set()).add(w)
     # also catch "single cell" vs "single-cell"
     for m in re.finditer(r"\b(\w+)\s(\w+)\b", full):
         joined = m.group(1) + "-" + m.group(2)
-        if joined in full and joined not in (m.group(0),):
+        if joined in full:
             groups.setdefault(variant_key(joined), set()).update({joined, m.group(0)})
     for key, variants in sorted(groups.items()):
         if len(variants) > 1:
@@ -285,9 +256,9 @@ def main():
                              f"p{','.join(map(str, etal_pages))} (may be intentional short-form)",
             "low")
 
-    if len(label_styles) > 1:
-        add("citations", "-", "figure/table label styles mixed: " + ", ".join(
-            f"{k} (p{','.join(map(str, sorted(set(v))))})" for k, v in sorted(label_styles.items())), "medium")
+    for variants in (("Figure", "Fig."), ("Table", "Tab.")):
+        if all(style in label_styles for style in variants):
+            add("citations", "-", "label abbreviation varies: " + " / ".join(variants), "medium")
 
     ref_numbers = [int(x) for x in re.findall(r"\[(\d{1,3})\]", full)]
     if ref_numbers:
@@ -358,9 +329,10 @@ def main():
                 cur = f["kind"]
                 print(f"\n  [{cur}]")
             pg = f["page"]
-            pg = f"p{pg}" if isinstance(pg, int) else "all"
             if isinstance(pg, list):
                 pg = "p" + ",".join(str(x) for x in pg)
+            else:
+                pg = f"p{pg}" if isinstance(pg, int) else "all"
             print(f"    {f['severity']:6} {pg:10} {f['detail']}")
 
     print("\n  summary: " + (", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
@@ -380,4 +352,7 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, RuntimeError, ET.ParseError, subprocess.CalledProcessError) as exc:
+        sys.exit(f"error: {exc}")

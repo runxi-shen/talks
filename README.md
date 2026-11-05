@@ -53,8 +53,8 @@ same once the new source is deployed. No dependencies or build commands are need
    Use a short, stable filename with the year. Avoid spaces; capitalization
    matters. Do not rename an already-shared PDF.
 2. Run the QA + compression pipeline and review it before committing — see below.
-   A raw PowerPoint export is ~10 MB; 150 dpi brings it to ~2.8 MB with text and
-   links intact. `docs/` only ever receives compressed files.
+   Compression only changes raster images; text, fonts and links are preserved.
+   Size savings vary by deck. `docs/` only receives reviewed compressed files.
 3. Save a first-slide preview in `docs/assets/`. Use the image's actual width and
    height in the page; the current previews are 1200 × 675 pixels.
 4. Copy a `<article class="talk">` block in `docs/index.html` and update its title,
@@ -87,8 +87,10 @@ cat preview/*-lint.txt        # typos, term inconsistency, layout problems
 ```
 
 `talks-original/` is your source of truth and is never modified by the pipeline.
-A pre-commit hook rejects any staged PDF over 4 MiB, or one that was never approved,
-so decks cannot reach the site without a human looking at them.
+The local pre-commit hook rejects PDFs over 6 MiB or without a matching review
+approval. Changed sources/previews must be restaged and reviewed again. A larger
+reviewed deck can use an explicit `MAX_PDF_BYTES` limit; don't sacrifice clarity
+just to meet the default cap.
 
 Enable the hook once per clone:
 
@@ -96,10 +98,28 @@ Enable the hook once per clone:
 git config core.hooksPath .githooks
 ```
 
-Always compress from the original export in `talks-original/`, never from an
-already-compressed PDF (repeated JPEG passes accumulate loss). Emergency override:
-`ALLOW_UNREVIEWED_PDF=1 git commit ...`. Full details live in
-`.agents/skills/pdf-slide-compression/SKILL.md`.
+Compression requires Python 3 with **pikepdf + Pillow** and **Poppler**
+(`pdfinfo`, `pdftotext`, `pdftoppm`). If the Python packages aren't installed,
+`pdf.sh` can obtain them through Nix. Automated spelling checks need Hunspell and
+its `en_US` dictionary; otherwise the report explicitly marks spelling unavailable.
+Do not treat that as a spelling pass.
+
+Always compress from the original export, never an already-compressed PDF.
+**Back up `talks-original/` separately:** gitignored files don't travel with a clone.
+The scripts never commit or push automatically, and automated checks do not
+replace visual review. Full workflow: `.agents/skills/pdf-slide-compression/SKILL.md`.
+
+### Maintenance checks
+
+Using a Python environment with pikepdf and Pillow:
+
+```sh
+python3 .agents/skills/pdf-slide-compression/scripts/test-pdf.py -v
+```
+
+The tests generate PDFs in a disposable repository, including the invisible-citation
+regression, failed rendering, transparency preservation and stale-review rejection.
+Published slides are not modified.
 
 ## Local preview
 
